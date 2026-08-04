@@ -46,3 +46,23 @@ coverage/
 # of what the repo ships. The canonical copy lives outside every repo, in Draft 2/.
 INSTRUCTION-SET.md
 BUILD-LOG.md
+
+# --- Extraction cache ---
+.cache/
+
+# --- Delta Lake local data ---
+data/delta/
+
+# --- Spark ---
+metastore_db/
+derby.log
+spark-warehouse/
+
+# --- Airflow ---
+airflow.db
+airflow.cfg
+
+# --- dbt ---
+batch/dbt/target/
+batch/dbt/dbt_packages/
+batch/dbt/logs/
