@@ -1,0 +1,4 @@
+name,amount,date,amount,notes,
+Alice,100,2024-01-01,200,first entry,
+Bob,150,2024-01-02,300,second entry,
+Charlie,200,2024-01-03,400,,

@@ -1,0 +1,5 @@
+name,age,city,country,zip
+Alice,30,New York,USA,10001
+Bob,25,London
+Charlie,35,Paris,France,75001,extra_col,another_extra
+David,28,Berlin,Germany,10115

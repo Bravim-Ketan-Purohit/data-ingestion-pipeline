@@ -1,0 +1,7 @@
+name,age,city,score,active
+Alice,30,New York,95.5,true
+Bob,NULL,London,N/A,yes
+Charlie,-,Paris,#N/A,1
+David,28,,NaN,false
+Eve,None,Berlin,.,no
+Frank,25,Tokyo,--,0
