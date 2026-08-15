@@ -1,0 +1,105 @@
+# Default values for data-ingestion-pipeline.
+# NO SECRETS IN THIS FILE.
+
+replicaCount: 1
+
+api:
+  image:
+    repository: data-ingestion-pipeline/api
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  port: 7801
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilization: 70
+
+web:
+  image:
+    repository: data-ingestion-pipeline/web
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  port: 7800
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+worker:
+  image:
+    repository: data-ingestion-pipeline/worker
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  replicas: 2
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  host: ingestion.local
+  tls: []
+
+postgresql:
+  enabled: true
+  auth:
+    existingSecret: "pipeline-db-credentials"
+  primary:
+    persistence:
+      size: 10Gi
+
+minio:
+  enabled: true
+  auth:
+    existingSecret: "pipeline-s3-credentials"
+  persistence:
+    size: 50Gi
+
+kafka:
+  enabled: false  # Only for batch tier
+
+secrets:
+  # Reference to external secrets — NEVER store values here
+  anthropicApiKey:
+    secretName: "pipeline-api-keys"
+    key: "ANTHROPIC_API_KEY"
+  kmsKeyId:
+    secretName: "pipeline-kms"
+    key: "KMS_KEY_ID"
+  databaseUrl:
+    secretName: "pipeline-db-credentials"
+    key: "DATABASE_URL"
+
+observability:
+  enabled: true
+  otelCollectorEndpoint: "http://otel-collector:4317"
+  serviceMonitor:
+    enabled: true
+
+encryption:
+  kms:
+    enabled: true
+    # Key ARN referenced via secret, not stored in values
+    region: "us-east-1"
+  sse:
+    enabled: true
+    algorithm: "aws:kms"

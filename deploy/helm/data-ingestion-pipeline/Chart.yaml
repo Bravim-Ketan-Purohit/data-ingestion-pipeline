@@ -1,0 +1,9 @@
+apiVersion: v2
+name: data-ingestion-pipeline
+description: Unstructured data ingestion pipeline - interactive and batch tiers
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+maintainers:
+  - name: Bravim Purohit
+    email: bravimpurohit1305@gmail.com

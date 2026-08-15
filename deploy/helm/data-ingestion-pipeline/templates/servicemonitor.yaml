@@ -1,0 +1,16 @@
+{{- if .Values.observability.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "data-ingestion-pipeline.fullname" . }}
+  labels:
+    {{- include "data-ingestion-pipeline.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "data-ingestion-pipeline.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+{{- end }}
