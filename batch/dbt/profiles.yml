@@ -1,0 +1,12 @@
+data_ingestion:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: localhost
+      port: 7802
+      user: pipeline
+      password: pipeline
+      dbname: pipeline
+      schema: dbt_quality
+      threads: 4

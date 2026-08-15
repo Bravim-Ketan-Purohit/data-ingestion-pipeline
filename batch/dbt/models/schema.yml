@@ -1,0 +1,62 @@
+version: 2
+
+sources:
+  - name: silver
+    schema: public
+    tables:
+      - name: fields
+        description: "Silver layer: one row per extracted field with provenance"
+
+models:
+  - name: stg_silver_fields
+    description: "Staging view over Silver fields"
+    columns:
+      - name: field_id
+        description: "Unique field identifier"
+        tests:
+          - not_null
+          - unique
+      - name: document_id
+        description: "Source document ID"
+        tests:
+          - not_null
+      - name: content_hash
+        description: "SHA-256 of source document"
+        tests:
+          - not_null
+      - name: field_path
+        description: "JSON pointer path into target schema"
+        tests:
+          - not_null
+      - name: confidence
+        description: "Extraction confidence 0.0-1.0"
+        tests:
+          - not_null
+          - accepted_values:
+              values: []  # numeric range checked by custom test
+              quote: false
+
+  - name: gold_records
+    description: "Gold layer: conformed business records"
+    columns:
+      - name: document_id
+        description: "Source document ID"
+        tests:
+          - not_null
+          - unique
+      - name: content_hash
+        description: "Content hash for deduplication"
+        tests:
+          - not_null
+      - name: schema_name
+        description: "Target schema name"
+        tests:
+          - not_null
+      - name: quality_score
+        description: "Mean confidence across all fields"
+        tests:
+          - not_null
+      - name: field_count
+        description: "Number of fields extracted"
+        tests:
+          - not_null
