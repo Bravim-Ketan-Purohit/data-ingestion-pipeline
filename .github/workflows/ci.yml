@@ -4,52 +4,106 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch:
+    branches: [main]
 
 jobs:
-  frontend:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.12"
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv pip install -e ".[dev]" --system
+      - name: Ruff lint
+        run: ruff check pipeline/ tests/
+      - name: Ruff format check
+        run: ruff format --check pipeline/ tests/
+      - name: Mypy
+        run: mypy pipeline/uploads pipeline/schemas pipeline/partition pipeline/limits
 
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pipeline
+          POSTGRES_PASSWORD: pipeline
+          POSTGRES_DB: pipeline
+        ports:
+          - 7802:5432
+        options: >-
+          --health-cmd "pg_isready -U pipeline"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.12"
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv pip install -e ".[dev]" --system
+      - name: Run migrations
+        run: alembic upgrade head
+        env:
+          DATABASE_URL: postgresql+asyncpg://pipeline:pipeline@localhost:7802/pipeline
+      - name: Run tests
+        run: pytest -q --tb=short
+        env:
+          DATABASE_URL: postgresql+asyncpg://pipeline:pipeline@localhost:7802/pipeline
+          S3_ENDPOINT_URL: http://localhost:7804
+          ANTHROPIC_API_KEY: test-key
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: "3.14.0"
+      - name: Lint Helm chart
+        run: helm lint deploy/helm/data-ingestion-pipeline
+      - name: Template Helm chart
+        run: helm template test deploy/helm/data-ingestion-pipeline
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7"
+      - name: Terraform fmt
+        run: terraform fmt -check
+        working-directory: infra
+      - name: Terraform validate
+        run: terraform init -backend=false && terraform validate
+        working-directory: infra
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
-
-      - name: Install, lint, build
-        run: |
-          if [ ! -f web/package.json ]; then
-            echo "No web/package.json yet - scaffold only."
-            exit 0
-          fi
-          cd web
-          npm ci || npm install
-          npm run lint --if-present
-          npm run build --if-present
-
-  backend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
+          node-version: 22
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff pytest
-          if [ -f api/requirements.txt ]; then pip install -r api/requirements.txt; fi
-
+        run: npm ci
+        working-directory: web
+      - name: Type check
+        run: npx tsc --noEmit
+        working-directory: web
       - name: Lint
-        run: ruff check .
-
-      - name: Test
-        run: |
-          set +e
-          pytest -q
-          code=$?
-          set -e
-          if [ $code -eq 5 ]; then echo "No tests collected yet - passing scaffold."; exit 0; fi
-          exit $code
+        run: npm run lint
+        working-directory: web
+      - name: Build
+        run: npm run build
+        working-directory: web
