@@ -39,7 +39,9 @@ user; this repo's job is to produce a number honest enough to support whichever 
 
 - Not a general-purpose OCR engine. Use an existing extractor for text/layout.
 - No handwriting recognition. Note it in the README as a known limitation.
-- No data warehouse or destination connectors. Output is validated JSON plus an export.
+- **Amended 2026-08-17:** the interactive tier's output is still validated JSON plus an export. A **batch /
+  lakehouse tier** (Spark, Delta Lake, Medallion layers, Airflow, dbt) is now in scope as M8 — see §15. Still
+  no third-party destination connectors (Salesforce, Snowflake, HubSpot, etc.).
 - No multi-tenant billing or user management beyond simple scoping.
 - No fine-tuning. Claude API with structured output.
 
@@ -307,3 +309,185 @@ Next.js (App Router) + TypeScript + Tailwind + shadcn/ui.
 
 Any unchecked row ⇒ `Bravim_Purohit_FDE.tex:142` stays commented and `[XX]` stays bracketed. The last row is
 the one to settle early, because it changes the resume text and not just the code.
+
+---
+
+## 15. Extended stack (added 2026-08-17) — the batch / lakehouse tier
+
+This project roughly doubles. It is the honest home for the data-engineering stack because it is the only one
+of the eight whose subject is moving messy data at volume — but it becomes a **two-tier system**, and the
+tiers must stay genuinely separate.
+
+### 15.1 Two tiers, one schema registry
+
+| | Interactive tier (M1–M7) | **Batch tier (M8)** |
+| --- | --- | --- |
+| Unit of work | one document, a human waiting | a corpus of thousands, nobody waiting |
+| Verification | operator verifies every field before commit | statistical sampling + automated quality gates |
+| Latency budget | seconds | minutes to hours |
+| Failure handling | surface to the operator | quarantine and continue |
+| Runtime | FastAPI + Claude API | Spark + Airflow + Delta Lake |
+
+They share the **schema registry** and the extraction prompts, and nothing else. That sharing is the design's
+whole justification: the same target schema drives both a human-in-the-loop path and an unattended path, and
+records normalised by either land in the same shape.
+
+**Do not let the tiers merge.** A Spark job that calls the interactive API per document is neither tier and
+will be slow and fragile. A batch tier that skips quality gates because "the interactive tier verifies
+things" is unverified data with extra steps.
+
+### 15.2 Medallion architecture on Delta Lake
+
+```
+ Bronze  raw landing — original bytes + ingest metadata, never mutated, partitioned by ingest date
+    │     Delta table over Parquet; schema-on-read; one row per source document
+    ▼
+ Silver  partitioned + typed — one row per extracted field with provenance, confidence,
+    │     partition id, and source span. Schema enforced. Deduplicated by content hash.
+    │     This is where CSV pathologies and PDF layout are already resolved.
+    ▼
+ Gold    schema-conformed business records — one row per document conforming to the target
+          JSON Schema, validated, with a quality score. dbt owns the transforms and the tests.
+```
+
+Delta Lake requirements — use the features that justify choosing it over plain Parquet, or don't claim it:
+
+- **ACID appends and concurrent writers.** Multiple Spark jobs writing Bronze without corrupting it.
+- **Schema evolution** on Silver: a new field in the target schema must not require a backfill of everything.
+  Use `mergeSchema` deliberately, not as a default.
+- **MERGE / upsert** for re-processed documents — reprocessing a corpus after a prompt change must update
+  rows, not duplicate them. This is the operation plain Parquet cannot do and is the honest reason Delta is
+  here.
+- **Time travel** for reproducibility: every Gold record records the Delta version of the Silver it derived
+  from, so a result can be reproduced exactly after a re-extraction.
+- `OPTIMIZE` / `ZORDER` on the columns actually filtered, and `VACUUM` with a retention policy — a lakehouse
+  with no compaction story becomes a small-file problem, and knowing that is the point.
+
+### 15.3 Spark (PySpark)
+
+The batch tier's compute. Where it genuinely helps:
+
+- **Partitioning and layout** — Bronze → Silver is embarrassingly parallel across documents.
+- **Rate-limited external calls from executors** is the interesting hard part: the Claude API has a global
+  rate limit, and naive `mapPartitions` with N executors will blow through it and get throttled. Solutions to
+  choose between and *write up*: a bounded executor pool with a per-executor token bucket sized to
+  `global_limit / num_executors`, or a two-stage design where Spark prepares batches and a separate
+  concurrency-controlled async worker makes the calls. Pick one, explain the trade in `docs/BATCH.md`.
+- **Skew handling** — a 400-page PDF beside 2-page CSVs is textbook partition skew. Salting or size-based
+  repartitioning, with the before/after stage timings shown.
+- Local mode for dev (`local[4]`) with a memory cap; Databricks for the scale run.
+
+Explicitly not for: the interactive tier, or datasets small enough for pandas. A Spark job over 30 documents
+is a demonstration of Spark, not a use of it — so the batch corpus must be large enough (≥ 5 000 documents,
+synthesised by mutating a seed corpus if needed) that Spark is the honest choice. State the corpus size.
+
+### 15.4 Databricks
+
+The managed platform for the scale run: notebooks for exploration, Jobs for scheduled runs, Unity Catalog for
+the three layers if available on the tier. Free/Community tier or a trial is enough; the repo must also run
+end-to-end on **local Spark + local Delta** so a reader without a Databricks account can execute it. Note
+which results came from which environment.
+
+### 15.5 Airflow + dbt
+
+- **Airflow** orchestrates the batch DAG: `land → validate → partition → extract → conform → quality_gate →
+  publish`. Real requirements, not a hello-world DAG: idempotent tasks (a re-run must not duplicate), sensors
+  on new Bronze partitions, per-task retries with backoff, SLA misses alerting, backfill over a date range,
+  and **task-level cost accounting** so an expensive extraction day is attributable.
+  Airflow's own scheduler is not the parallelism — Spark is. Airflow submits and tracks.
+- **dbt** owns Silver → Gold: models as SQL, `schema.yml` tests (`not_null`, `accepted_values`, uniqueness,
+  relationship tests), snapshots for slowly-changing reference data, and generated docs committed. dbt tests
+  become the **quality gate** — a failing test blocks publish to Gold, which is the mechanism that replaces
+  the interactive tier's human verification.
+
+### 15.6 Kafka for ingest events
+
+Document arrivals publish to a Kafka topic (`documents.landed`) with a Protobuf-encoded event. The batch tier
+consumes it to trigger micro-batches; the interactive tier ignores it. This decouples arrival from
+processing, and gives the Airflow sensor something real to sense. Single-broker KRaft mode locally.
+
+Keep it honest: Kafka here is an **event notification bus**, not the data path — documents move through S3 and
+Delta, never through Kafka. Say so, because putting file bytes in Kafka is a common and costly mistake.
+
+### 15.7 Kubernetes + Helm, Nginx, KMS
+
+Same forward-deployed rationale as the sibling helpdesk project: the deliverable is something installable in a
+customer's environment.
+
+```
+deploy/helm/data-ingestion-pipeline/     api, web, worker, ingress (Nginx), HPA, secrets, ServiceMonitor
+```
+
+`helm lint` + `helm template` in CI; installs on **kind** with the smoke suite green; no secrets in
+`values.yaml`. **AWS KMS** for document and field encryption at rest (client-side envelope encryption before
+S3 upload, so bytes are unreadable even with bucket access) plus SSE-KMS on the bucket. `infra/` Terraform for
+the bucket, CMK, IAM, and VPC endpoints.
+
+### 15.8 CI portability: GitLab CI and Jenkins
+
+Enterprise customers run neither GitHub Actions nor, often, anything you'd choose. Demonstrating pipeline
+portability is a real FDE signal — with one condition.
+
+**Both must actually run.** A `Jenkinsfile` or `.gitlab-ci.yml` sitting unexercised in a repo is visibly
+decorative and worse than its absence:
+
+- **GitLab CI** — mirror the repo to gitlab.com (free tier) and let the pipeline run there. Link the passing
+  pipeline in the README.
+- **Jenkins** — a `Jenkinsfile` (declarative, multi-stage: lint → unit → integration → helm lint → build)
+  exercised against a **local Jenkins in Docker**, with `docker-compose.jenkins.yml` and the setup documented
+  so a reader can reproduce it. Commit a screenshot or the console log of a green build.
+
+If either can't be genuinely exercised, **delete that file** rather than shipping it. This is the lowest
+value-per-hour item in the extended stack; treat it as optional and do it last.
+
+### 15.9 COMPLIANCE.md
+
+Same rule as the sibling project, and it matters here because this tier handles bulk client documents:
+data classification, client-data handling and the prohibition on real customer data in the repo, encryption
+in transit and at rest (KMS envelope + SSE-KMS + TLS), the correction log as audit trail, retention and
+deletion including Delta `VACUUM` implications for "right to be forgotten", access control, and known gaps.
+
+Framed as **"designed against SOC 2 and HIPAA control boundaries"** — never "SOC 2 compliant" or "HIPAA
+compliant". Those are audit outcomes, not code properties, and asserting one you don't have is a
+misrepresentation that ends healthcare-adjacent hiring processes. Include a "not claimed" section naming what
+real certification would require.
+
+Note the genuine tension worth writing about: Delta time travel and a deletion request are in conflict.
+`VACUUM` retention bounds how long deleted data is still reachable, and stating that trade-off is a stronger
+signal than pretending it doesn't exist.
+
+### 15.10 Parquet + OpenTelemetry
+
+- **Parquet** underlies the Delta layers, and eval/timing results move to it too — per-field extraction
+  records across 5 000 documents are millions of rows, queryable with `duckdb`.
+- **OpenTelemetry** spans: `upload_part`, `complete`, `partition`, `extract_call`, `merge`, `validate`,
+  `commit`, and batch spans `spark_stage`, `dbt_model`, `quality_gate`. Rate-limiter decisions as span
+  events, so throttling is visible in a trace. Airflow task instances carry the trace id, so one trace spans
+  the DAG. **No document contents in attributes** — the data is client data by premise.
+
+## 16. Additional milestones
+
+- **M8 Batch tier.** ≥ 5 000-document corpus; Bronze/Silver/Gold on Delta Lake with MERGE-based
+  reprocessing and time-travel provenance; Spark job with a solved executor-side rate-limit strategy and a
+  skew fix, both written up in `docs/BATCH.md`; Airflow DAG idempotent with backfill; dbt models + tests
+  gating publish to Gold; Kafka arrival events; runs end-to-end on local Spark **and** on Databricks.
+- **M9 Deployable.** Helm chart installing on kind with the smoke suite green; Nginx ingress; KMS envelope
+  encryption before upload + SSE-KMS; Terraform `fmt`/`validate` in CI.
+- **M10 CI portability (optional, last).** GitLab pipeline green on a mirror and linked; Jenkinsfile green
+  against local Jenkins with evidence committed — or both files deleted.
+- **M11 Compliance + observability.** `COMPLIANCE.md` including the deletion-vs-time-travel tension and the
+  "not claimed" section; OTel across interactive and batch tiers with a no-content-in-attributes test.
+
+### Honest-claims additions
+
+| Claim | Status | Backed by |
+| --- | --- | --- |
+| handles volume, not just documents | ☐ | ≥ 5 000-doc corpus through Spark; stage timings before/after skew fix |
+| lakehouse, not a folder of Parquet | ☐ | Delta MERGE reprocessing, schema evolution, time-travel provenance, OPTIMIZE/VACUUM policy |
+| orchestrated, not scripted | ☐ | idempotent Airflow DAG with backfill and SLA alerting |
+| data quality is enforced | ☐ | dbt tests blocking publish to Gold |
+| rate limits respected at scale | ☐ | executor-side strategy documented in `docs/BATCH.md`; no throttling in the run |
+| deployable into a customer cluster | ☐ | Helm chart installs on kind; smoke suite green |
+| CI portable across platforms | ☐ | GitLab pipeline linked **and** Jenkins build evidenced — or files removed |
+| encrypted at rest with managed keys | ☐ | client-side KMS envelope + SSE-KMS |
+| control boundary documented | ☐ | `COMPLIANCE.md`, *designed against*, never *compliant* |

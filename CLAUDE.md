@@ -124,3 +124,61 @@ Milestones per `SPEC.md` §13. CI green on push.
 Report honestly, with conditions attached: "32 documents, 2 participants counterbalanced: manual median
 14 m 20 s at 94.1 % field accuracy, tool median 3 m 05 s at 97.8 % — 78 % reduction" is the deliverable.
 "Cut onboarding time 78 %" with no arms, no N, and no accuracy is not.
+
+---
+
+## Extended stack additions (2026-08-17)
+
+See `SPEC.md` §15–16. This project roughly doubles: it gains a **batch / lakehouse tier** — **Spark
+(PySpark)**, **Delta Lake** with Bronze/Silver/Gold, **Databricks**, **Airflow**, **dbt**, **Kafka** arrival
+events, **Parquet** — plus **Kubernetes + Helm** with **Nginx**, **AWS KMS**, **GitLab CI + Jenkins**,
+**COMPLIANCE.md**, **OpenTelemetry**.
+
+It is now the largest of the eight and probably should not be the first one you start.
+
+**New ports** (same 7800–7899 block): `7806` Spark master UI · `7807` Airflow web · `7808` Kafka (KRaft) ·
+`7809` Jenkins · `7810` Jaeger UI · `7811` OTel Collector gRPC · `7812` Spark worker UI.
+
+**New prerequisites:** `pyspark`, `delta-spark`, `apache-airflow`, `dbt-core` + adapter, `aiokafka`,
+`pyarrow`, `boto3`, `opentelemetry-sdk`. For M9: `kind` + `helm`. For M10: local Jenkins via
+`docker-compose.jenkins.yml`. Spark local mode with a memory cap (`local[4]`, ~2 GB); Airflow and Kafka are
+1–2 GB each — put every batch-tier service behind a `--profile batch` so the interactive tier stays light.
+
+**New hard rules:**
+
+9. **Keep the two tiers separate.** A Spark job that calls the interactive API per document is neither tier and
+   will be slow and fragile. A batch tier that skips quality gates because "the interactive tier verifies
+   things" is unverified data with extra steps. They share the schema registry and extraction prompts, nothing
+   else.
+10. **Spark must be the honest choice.** A Spark job over 30 documents demonstrates Spark rather than using it.
+    The batch corpus is ≥ 5 000 documents (synthesise by mutating a seed corpus if needed) and the size is
+    stated in the results.
+11. **Solve executor-side rate limiting deliberately.** Naive `mapPartitions` with N executors will blow
+    through the Claude API's global limit. Pick a strategy — per-executor token bucket sized to
+    `global_limit / num_executors`, or a two-stage prepare-then-call design — and write the trade up in
+    `docs/BATCH.md`.
+12. **Use the Delta features that justify Delta.** MERGE-based reprocessing (a prompt change updates rows, it
+    does not duplicate them), schema evolution on Silver, time-travel provenance on Gold, and an
+    OPTIMIZE/VACUUM policy. Without those it's a folder of Parquet with extra dependencies.
+13. **Kafka carries events, never file bytes.** Documents move through S3 and Delta. Putting document bytes in
+    Kafka is a common and expensive mistake — say so in the README.
+14. **Airflow tasks are idempotent.** A re-run or a backfill must not duplicate rows. Airflow submits and
+    tracks; Spark is the parallelism.
+15. **dbt tests are the quality gate.** A failing test blocks publish to Gold. That gate is what replaces the
+    interactive tier's human verification, so it cannot be advisory.
+16. **The repo must run end-to-end on local Spark + local Delta**, with no Databricks account. Record which
+    environment produced which result.
+17. **Never write "SOC 2 compliant" or "HIPAA compliant"** — anywhere, in any phrasing. `COMPLIANCE.md` is
+    framed as *"designed against the SOC 2 / HIPAA control boundaries"* with a "not claimed" section. Also
+    document the genuine deletion-vs-time-travel tension: `VACUUM` retention bounds how long deleted data
+    stays reachable. Stating that trade-off is a stronger signal than pretending it isn't there.
+18. **Never use real client data from the user's employer.** Public or synthetic corpora only. No document
+    contents in span attributes or logs.
+19. **GitLab CI and Jenkins must actually run**, with evidence committed (a linked passing pipeline, a build
+    log). An unexercised `Jenkinsfile` is visibly decorative — **delete it rather than ship it**. This is the
+    lowest value-per-hour item here; do it last or not at all.
+20. **No secrets in `values.yaml`.** Client-side KMS envelope encryption happens **before** S3 upload, so the
+    bytes are unreadable even with bucket access, plus SSE-KMS on the bucket.
+
+**New stop-and-ask:** before creating a Databricks account or real AWS resources; before the ≥ 5 000-document
+corpus if it needs sourcing decisions; before running the batch stack alongside sibling projects on 18 GB.
