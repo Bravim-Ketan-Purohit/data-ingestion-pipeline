@@ -130,5 +130,8 @@ Where `SPEC.md` and any other document disagree, `SPEC.md` wins.
 
 ## Status
 
-Scaffold — specified, not yet implemented. This repo reserves ports **7800–7899**; up to eight sibling
+Implemented. Chunked upload, extraction, schema mapping and validation, encryption, export, and the
+batch paths (`batch/kafka`, `batch/spark`, `batch/airflow`) are built, with the mapping UI in `web/` and 21
+test files. **The onboarding-time reduction is not measured**: that claim is a comparison against a manual
+baseline, and the manual arm has to be timed with real people before any percentage exists. This repo reserves ports **7800–7899**; up to eight sibling
 projects may run at the same time, so nothing here binds outside that block.
